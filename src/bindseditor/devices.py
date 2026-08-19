@@ -38,3 +38,20 @@ def device_sort_key(device_name: str) -> tuple[int, str]:
         return (DEVICE_SORT_ORDER.index(device_name), device_name)
     except ValueError:
         return (len(DEVICE_SORT_ORDER), device_name)
+
+
+def device_id_for_friendly_name(name: str) -> str | None:
+    """Reverse lookup: friendly name -> raw device ID. None if not known."""
+    for device_id, friendly in KNOWN_DEVICES.items():
+        if friendly == name:
+            return device_id
+    return None
+
+
+def known_device_names() -> list[str]:
+    """Friendly names offered in the Device dropdown, in a sensible order."""
+    ordered = [n for n in DEVICE_SORT_ORDER if n in KNOWN_DEVICES.values()]
+    remaining = sorted(
+        v for v in KNOWN_DEVICES.values() if v not in ordered and v != "(unbound)"
+    )
+    return ordered + remaining + ["(unbound)"]

@@ -40,11 +40,12 @@ def export_pdf(rows: list[BindingRow], preset_name: str, out_path: Path) -> None
         for r in groups[device_name]:
             table_rows.append([r.label, r.slot, r.key, r.modifiers, r.inverted])
 
-        pdf.table(
+        with pdf.table(
             rows=table_rows,
             col_widths=_COL_WIDTHS,
             text_align="LEFT",
             first_row_as_headings=True,
-        )
+        ):
+            pass
 
     pdf.output(str(out_path))

@@ -18,9 +18,13 @@ slots (`Device="{NoDevice}"`) are filtered out.
 ## Features
 
 - Table of every bound action, grouped by device
-- Edit Device, Key, Modifiers, and Inverted by **typing text into the cell**
-  (double-click to edit) - there is no "press a button to bind" capture
-  anywhere in this tool
+- Edit Key, Modifiers, and Inverted by **typing text into the cell**
+  (double-click to edit); edit Device via a **dropdown of known devices**
+  (double-click, no free text) - there is no "press a button to bind"
+  capture anywhere in this tool
+- Full Undo/Redo (Ctrl+Z / Ctrl+Y) for every edit
+- File > Reload from Disk discards all in-memory changes and reloads the
+  last saved version of the file
 - Save writes the edits back into the original `.binds` XML file (a
   timestamped `.bak` backup is made first)
 - Export the current table to a PDF, one page per device

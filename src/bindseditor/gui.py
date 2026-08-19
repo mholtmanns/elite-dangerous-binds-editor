@@ -1,16 +1,18 @@
 """Tkinter GUI for viewing and editing an Elite Dangerous .binds file.
 
-Editing is done by double-clicking a cell and typing a new value - there is
-no "press a button to bind" capture anywhere in this tool, by design.
+Editing is done by double-clicking a cell and typing a new value (or, for
+Device, picking from a dropdown of known devices) - there is no "press a
+button to bind" capture anywhere in this tool, by design.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .devices import device_sort_key
+from .devices import device_id_for_friendly_name, device_sort_key, known_device_names
 from .parser import BindingRow, apply_edit, extract_rows, load_binds, save_binds
 from .pdf_export import export_pdf
 
@@ -32,6 +34,15 @@ COLUMN_TO_FIELD = {
 }
 
 
+@dataclass
+class EditCommand:
+    item: str
+    row: BindingRow
+    field_name: str
+    old_value: str
+    new_value: str
+
+
 class BindsEditorApp:
     def __init__(self, root: tk.Tk, initial_path: Path | None = None):
         self.root = root
@@ -39,6 +50,10 @@ class BindsEditorApp:
         self.rows: list[BindingRow] = []
         self.path: Path | None = None
         self.dirty = False
+
+        self.undo_stack: list[EditCommand] = []
+        self.redo_stack: list[EditCommand] = []
+        self._save_mark = 0  # len(undo_stack) at last save
 
         self._build_menu()
         self._build_table()
@@ -54,6 +69,7 @@ class BindsEditorApp:
 
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open .binds file...", command=self.prompt_open_file)
+        file_menu.add_command(label="Reload from Disk", command=self.reload_from_disk)
         file_menu.add_command(label="Save", command=self.save, accelerator="Ctrl+S")
         file_menu.add_separator()
         file_menu.add_command(label="Export PDF...", command=self.prompt_export_pdf)
@@ -61,12 +77,20 @@ class BindsEditorApp:
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
 
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="Editing help", command=self._show_help)
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
         self.root.bind("<Control-s>", lambda _e: self.save())
+        self.root.bind("<Control-z>", lambda _e: self.undo())
+        self.root.bind("<Control-y>", lambda _e: self.redo())
+        self.root.bind("<Control-Shift-Z>", lambda _e: self.redo())
 
     def _build_table(self) -> None:
         container = ttk.Frame(self.root)
@@ -94,7 +118,7 @@ class BindsEditorApp:
         self.tree.bind("<Double-1>", self._on_double_click)
 
         self._row_by_item: dict[str, BindingRow] = {}
-        self._edit_entry: tk.Entry | None = None
+        self._edit_widget: tk.Entry | ttk.Combobox | None = None
 
     def _build_statusbar(self) -> None:
         self.status_var = tk.StringVar(value="No file loaded.")
@@ -104,11 +128,14 @@ class BindsEditorApp:
     def _show_help(self) -> None:
         messagebox.showinfo(
             "Editing help",
-            "Double-click a Device, Key, Modifiers, or Inverted cell to edit it as text.\n\n"
+            "Double-click a Device, Key, Modifiers, or Inverted cell to edit it.\n\n"
+            "Device is a dropdown of known devices - no free text entry.\n\n"
             "Key / Modifiers use Elite Dangerous's internal names, e.g.:\n"
             "  Key_A, Key_LeftAlt, Key_RightControl, Joy_1, Joy_XAxis\n\n"
             "Modifiers: comma-separated list, e.g. Key_LeftAlt,Key_RightControl\n\n"
             "Inverted: type Yes or No (axis bindings only).\n\n"
+            "Ctrl+Z / Ctrl+Y undo and redo edits. File > Reload from Disk discards\n"
+            "all changes and reloads the last saved version of the file.\n\n"
             "Nothing is written to disk until you choose File > Save.",
         )
 
@@ -133,9 +160,23 @@ class BindsEditorApp:
         self.path = path
         self.rows = extract_rows(tree_xml)
         self.dirty = False
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._save_mark = 0
         self._populate_table()
         self._update_title()
         self.status_var.set(f"Loaded {len(self.rows)} bound entries from {path.name}")
+
+    def reload_from_disk(self) -> None:
+        if self.path is None:
+            return
+        if self.dirty:
+            if not messagebox.askyesno(
+                "Reload from Disk",
+                "This discards all unsaved changes and reloads the file from disk. Continue?",
+            ):
+                return
+        self.open_file(self.path)
 
     # --------------------------------------------------------------- table
 
@@ -164,6 +205,12 @@ class BindsEditorApp:
                 )
                 self._row_by_item[item] = row
 
+    def _refresh_row_display(self, item: str, row: BindingRow) -> None:
+        self.tree.set(item, "device", row.device_name)
+        self.tree.set(item, "key", row.key)
+        self.tree.set(item, "modifiers", row.modifiers)
+        self.tree.set(item, "inverted", row.inverted)
+
     def _update_title(self) -> None:
         name = self.path.name if self.path else "(no file)"
         star = "*" if self.dirty else ""
@@ -185,12 +232,19 @@ class BindsEditorApp:
         bbox = self.tree.bbox(item, col_id)
         if not bbox:
             return
-        x, y, width, height = bbox
 
         row = self._row_by_item[item]
+        if col_name == "device":
+            self._begin_device_edit(item, row, bbox)
+        else:
+            self._begin_text_edit(item, row, col_name, bbox)
+
+    def _begin_text_edit(self, item: str, row: BindingRow, col_name: str,
+                          bbox: tuple[int, int, int, int]) -> None:
+        x, y, width, height = bbox
         current_value = self.tree.set(item, col_name)
 
-        self._destroy_edit_entry()
+        self._destroy_edit_widget()
         entry = tk.Entry(self.tree)
         entry.insert(0, current_value)
         entry.select_range(0, "end")
@@ -199,42 +253,109 @@ class BindsEditorApp:
 
         def commit(_event=None) -> None:
             new_value = entry.get()
-            self._destroy_edit_entry()
+            self._destroy_edit_widget()
             if new_value == current_value:
                 return
-            self._apply_cell_edit(item, row, col_name, new_value)
+            self._commit_edit(item, row, col_name, current_value, new_value)
 
         def cancel(_event=None) -> None:
-            self._destroy_edit_entry()
+            self._destroy_edit_widget()
 
         entry.bind("<Return>", commit)
         entry.bind("<KP_Enter>", commit)
         entry.bind("<Escape>", cancel)
         entry.bind("<FocusOut>", commit)
-        self._edit_entry = entry
+        self._edit_widget = entry
 
-    def _destroy_edit_entry(self) -> None:
-        if self._edit_entry is not None:
-            entry = self._edit_entry
-            self._edit_entry = None
-            entry.destroy()
+    def _begin_device_edit(self, item: str, row: BindingRow,
+                            bbox: tuple[int, int, int, int]) -> None:
+        x, y, width, height = bbox
+        current_value = self.tree.set(item, "device")
 
-    def _apply_cell_edit(self, item: str, row: BindingRow, col_name: str, new_value: str) -> None:
+        self._destroy_edit_widget()
+        combo = ttk.Combobox(self.tree, state="readonly", values=known_device_names())
+        combo.set(current_value)
+        combo.place(x=x, y=y, width=width, height=height)
+        combo.focus_set()
+
+        def commit(_event=None) -> None:
+            new_friendly = combo.get()
+            self._destroy_edit_widget()
+            if new_friendly == current_value:
+                return
+            self._commit_edit(item, row, "device", current_value, new_friendly)
+
+        def cancel(_event=None) -> None:
+            self._destroy_edit_widget()
+
+        combo.bind("<<ComboboxSelected>>", commit)
+        combo.bind("<Escape>", cancel)
+        combo.bind("<FocusOut>", commit)
+        self._edit_widget = combo
+
+    def _destroy_edit_widget(self) -> None:
+        if self._edit_widget is not None:
+            widget = self._edit_widget
+            self._edit_widget = None
+            widget.destroy()
+
+    def _commit_edit(self, item: str, row: BindingRow, col_name: str,
+                      old_display_value: str, new_display_value: str) -> None:
+        """Apply an edit coming from the UI, recording it for undo."""
         field_name = COLUMN_TO_FIELD[col_name]
-        try:
-            apply_edit(row, field_name, new_value)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Invalid edit", str(exc))
+
+        if col_name == "device":
+            old_raw = row.device_id
+            new_raw = device_id_for_friendly_name(new_display_value)
+            if new_raw is None:
+                new_raw = new_display_value  # shouldn't happen - dropdown is restricted
+        elif col_name == "key":
+            old_raw, new_raw = row.key, new_display_value
+        elif col_name == "modifiers":
+            old_raw, new_raw = row.modifiers, new_display_value
+        else:  # inverted
+            old_raw, new_raw = row.inverted, new_display_value
+
+        if not self._apply_and_refresh(item, row, field_name, new_raw):
             return
 
-        self.tree.set(item, "device", row.device_name)
-        self.tree.set(item, "key", row.key)
-        self.tree.set(item, "modifiers", row.modifiers)
-        self.tree.set(item, "inverted", row.inverted)
-
-        self.dirty = True
-        self._update_title()
+        self.undo_stack.append(EditCommand(item, row, field_name, old_raw, new_raw))
+        self.redo_stack.clear()
+        self._mark_dirty_from_stack()
         self.status_var.set(f"Edited {row.label} ({row.slot}) - not saved yet")
+
+    def _apply_and_refresh(self, item: str, row: BindingRow, field_name: str, value: str) -> bool:
+        try:
+            apply_edit(row, field_name, value)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Invalid edit", str(exc))
+            return False
+        self._refresh_row_display(item, row)
+        return True
+
+    def _mark_dirty_from_stack(self) -> None:
+        self.dirty = len(self.undo_stack) != self._save_mark
+        self._update_title()
+
+    # ------------------------------------------------------------- undo/redo
+
+    def undo(self) -> None:
+        if not self.undo_stack:
+            return
+        cmd = self.undo_stack.pop()
+        if self._apply_and_refresh(cmd.item, cmd.row, cmd.field_name, cmd.old_value):
+            self.redo_stack.append(cmd)
+            self._mark_dirty_from_stack()
+            self.status_var.set(f"Undid edit to {cmd.row.label} ({cmd.row.slot})")
+
+    def redo(self) -> None:
+        if not self.redo_stack:
+            return
+        cmd = self.redo_stack.pop()
+        if self._apply_and_refresh(cmd.item, cmd.row, cmd.field_name, cmd.new_value):
+            self.undo_stack.append(cmd)
+            self._mark_dirty_from_stack()
+            self.status_var.set(f"Redid edit to {cmd.row.label} ({cmd.row.slot})")
 
     # ---------------------------------------------------------------- save
 
@@ -247,6 +368,7 @@ class BindsEditorApp:
             messagebox.showerror("Save failed", str(exc))
             return
 
+        self._save_mark = len(self.undo_stack)
         self.dirty = False
         self._update_title()
         msg = f"Saved to {self.path.name}"
