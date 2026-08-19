@@ -31,17 +31,29 @@ not with this app.
 
 ## Features
 
-- Table of every bound action, grouped by device
-- Edit Key, Modifiers, and Inverted by **typing text into the cell**
-  (double-click to edit); edit Device via a **dropdown of known devices**
-  (double-click, no free text) - there is no "press a button to bind"
-  capture anywhere in this tool
+- One row per action, grouped by device in **collapsible sections** (click
+  the arrow next to a device name)
+- Columns: Device, Action, Key, Modifiers, **Secondary key** (the action's
+  second binding, including its modifiers, if it has one), Inverted
+- Click the **Device** or **Action** column header to sort (click again to
+  reverse)
+- **Hover any cell** to see its full content in a tooltip - handy once
+  columns get narrow
+- Edit Key, Modifiers, Secondary key, and Inverted by **typing text into
+  the cell** (double-click to edit); edit Device via a **dropdown of known
+  devices** (double-click, no free text) - there is no "press a button to
+  bind" capture anywhere in this tool
 - Full Undo/Redo (Ctrl+Z / Ctrl+Y) for every edit
 - File > Reload from Disk discards all in-memory changes and reloads the
   last saved version of the file
 - Save writes the edits back into the original `.binds` XML file (a
   timestamped `.bak` backup is made first)
 - Export the current table to a PDF, one page per device
+
+If an action has both a primary and a secondary binding, the primary drives
+the Key/Modifiers columns and the secondary appears in its own column. If
+only a secondary binding exists, it's shown as the main Key/Modifiers
+instead (there's nothing else to put in "Secondary key" in that case).
 
 ## Setup
 
@@ -73,7 +85,9 @@ Elite Dangerous's internal names are used directly, e.g.:
 - Joystick axis: `Joy_XAxis`, `Joy_RZAxis`
 
 Modifiers are a comma-separated list, e.g. `Key_LeftAlt,Key_RightControl`.
-`Inverted` (axis rows only) accepts `Yes` / `No`.
+Secondary key uses `+` instead, matching how it's displayed, e.g.
+`Key_A + Key_LeftAlt + Key_RightControl` (clear the cell to remove the
+secondary binding). `Inverted` (axis rows only) accepts `Yes` / `No`.
 
 Nothing is written to disk until **File > Save**.
 

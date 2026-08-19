@@ -7,10 +7,10 @@ from pathlib import Path
 from fpdf import FPDF
 
 from .devices import device_sort_key
-from .parser import BindingRow
+from .parser import BindingRow, format_key_and_modifiers
 
-_HEADER = ["Action", "Slot", "Key", "Modifiers", "Inverted"]
-_COL_WIDTHS = (70, 22, 55, 55, 20)
+_HEADER = ["Action", "Key", "Modifiers", "Secondary key", "Inverted"]
+_COL_WIDTHS = (65, 40, 45, 55, 20)
 
 
 def _group_by_device(rows: list[BindingRow]) -> dict[str, list[BindingRow]]:
@@ -18,7 +18,7 @@ def _group_by_device(rows: list[BindingRow]) -> dict[str, list[BindingRow]]:
     for row in rows:
         groups.setdefault(row.device_name, []).append(row)
     for device_rows in groups.values():
-        device_rows.sort(key=lambda r: (r.label, r.slot))
+        device_rows.sort(key=lambda r: r.label)
     return groups
 
 
@@ -38,7 +38,8 @@ def export_pdf(rows: list[BindingRow], preset_name: str, out_path: Path) -> None
 
         table_rows = [_HEADER]
         for r in groups[device_name]:
-            table_rows.append([r.label, r.slot, r.key, r.modifiers, r.inverted])
+            secondary = format_key_and_modifiers(r.secondary_key, r.secondary_modifiers)
+            table_rows.append([r.label, r.key, r.modifiers, secondary, r.inverted])
 
         with pdf.table(
             rows=table_rows,

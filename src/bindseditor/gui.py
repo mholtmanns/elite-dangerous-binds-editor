@@ -17,25 +17,35 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .devices import DeviceNameStore, device_sort_key, name_store_path_for
-from .parser import BindingRow, apply_edit, extract_rows, load_binds, resolve_device_names, save_binds
+from .parser import (
+    BindingRow,
+    apply_edit,
+    extract_rows,
+    format_key_and_modifiers,
+    load_binds,
+    resolve_device_names,
+    save_binds,
+)
 from .pdf_export import export_pdf
 
-EDITABLE_COLUMNS = {"device", "key", "modifiers", "inverted"}
-COLUMNS = ("device", "action", "slot", "key", "modifiers", "inverted")
+EDITABLE_COLUMNS = {"device", "key", "modifiers", "secondary_key", "inverted"}
+COLUMNS = ("device", "action", "key", "modifiers", "secondary_key", "inverted")
 COLUMN_HEADINGS = {
     "device": "Device",
     "action": "Action",
-    "slot": "Slot",
     "key": "Key",
     "modifiers": "Modifiers",
+    "secondary_key": "Secondary key",
     "inverted": "Inverted",
 }
 COLUMN_TO_FIELD = {
     "device": "device_id",
     "key": "key",
     "modifiers": "modifiers",
+    "secondary_key": "secondary_key",
     "inverted": "inverted",
 }
+SORTABLE_COLUMNS = {"device", "action"}
 
 
 @dataclass
@@ -60,9 +70,13 @@ class BindsEditorApp:
         self.redo_stack: list[EditCommand] = []
         self._save_mark = 0  # len(undo_stack) at last save
 
+        self._device_sort_reverse = False
+        self._action_sort_reverse = False
+
         self._build_menu()
         self._build_table()
         self._build_statusbar()
+        self._update_sort_indicators()
 
         if initial_path is not None:
             self.open_file(initial_path)
@@ -105,15 +119,19 @@ class BindsEditorApp:
 
         self.tree = ttk.Treeview(container, columns=COLUMNS, show="tree headings")
         self.tree.heading("#0", text="")
-        self.tree.column("#0", width=0, stretch=False)
+        self.tree.column("#0", width=24, minwidth=24, stretch=False)  # collapse/expand arrow
         for col in COLUMNS:
-            self.tree.heading(col, text=COLUMN_HEADINGS[col])
-        self.tree.column("device", width=170, anchor="w")
-        self.tree.column("action", width=230, anchor="w")
-        self.tree.column("slot", width=70, anchor="w")
-        self.tree.column("key", width=170, anchor="w")
-        self.tree.column("modifiers", width=220, anchor="w")
-        self.tree.column("inverted", width=70, anchor="center")
+            if col in SORTABLE_COLUMNS:
+                self.tree.heading(col, text=COLUMN_HEADINGS[col],
+                                   command=lambda c=col: self._toggle_sort(c))
+            else:
+                self.tree.heading(col, text=COLUMN_HEADINGS[col])
+        self.tree.column("device", width=150, anchor="w")
+        self.tree.column("action", width=210, anchor="w")
+        self.tree.column("key", width=140, anchor="w")
+        self.tree.column("modifiers", width=170, anchor="w")
+        self.tree.column("secondary_key", width=190, anchor="w")
+        self.tree.column("inverted", width=65, anchor="center")
 
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -123,9 +141,15 @@ class BindsEditorApp:
         self.tree.tag_configure("group", background="#e8e8e8", font=("TkDefaultFont", 9, "bold"))
 
         self.tree.bind("<Double-1>", self._on_double_click)
+        self.tree.bind("<Motion>", self._on_tree_motion)
+        self.tree.bind("<Leave>", lambda _e: self._hide_tooltip())
 
         self._row_by_item: dict[str, BindingRow] = {}
         self._edit_widget: tk.Entry | ttk.Combobox | None = None
+
+        self._tooltip_win: tk.Toplevel | None = None
+        self._tooltip_after_id: str | None = None
+        self._tooltip_cell: tuple[str, str] | None = None
 
     def _build_statusbar(self) -> None:
         self.status_var = tk.StringVar(value="No file loaded.")
@@ -135,10 +159,14 @@ class BindsEditorApp:
     def _show_help(self) -> None:
         messagebox.showinfo(
             "Editing help",
-            "Double-click a Device, Key, Modifiers, or Inverted cell to edit it.\n\n"
-            "Device is a dropdown of known devices - no free text entry. Device\n"
-            "names are auto-detected from Windows where possible; use Edit >\n"
-            "Device Names... to name any device that couldn't be auto-detected.\n\n"
+            "Double-click a Device, Key, Modifiers, Secondary key, or Inverted\n"
+            "cell to edit it. Device is a dropdown of known devices - no free\n"
+            "text entry. Secondary key shows the action's second binding (if\n"
+            "any); type 'Key' or 'Key + Modifier + Modifier' to set it, or\n"
+            "clear the cell to remove it.\n\n"
+            "Hover any cell to see its full content in a tooltip.\n\n"
+            "Click the Device or Action column headers to sort. Click the\n"
+            "arrow next to a device group to collapse/expand it.\n\n"
             "Key / Modifiers use Elite Dangerous's internal names, e.g.:\n"
             "  Key_A, Key_LeftAlt, Key_RightControl, Joy_1, Joy_XAxis\n\n"
             "Modifiers: comma-separated list, e.g. Key_LeftAlt,Key_RightControl\n\n"
@@ -190,9 +218,28 @@ class BindsEditorApp:
         self.open_file(self.path)
 
     def _distinct_device_ids(self) -> list[str]:
-        return sorted({row.device_id for row in self.rows})
+        ids: set[str] = set()
+        for row in self.rows:
+            ids.add(row.device_id)
+            if row.secondary_device_id:
+                ids.add(row.secondary_device_id)
+        return sorted(ids)
 
     # --------------------------------------------------------------- table
+
+    def _toggle_sort(self, col: str) -> None:
+        if col == "device":
+            self._device_sort_reverse = not self._device_sort_reverse
+        elif col == "action":
+            self._action_sort_reverse = not self._action_sort_reverse
+        self._populate_table()
+        self._update_sort_indicators()
+
+    def _update_sort_indicators(self) -> None:
+        device_arrow = "▼" if self._device_sort_reverse else "▲"
+        action_arrow = "▼" if self._action_sort_reverse else "▲"
+        self.tree.heading("device", text=f"{COLUMN_HEADINGS['device']} {device_arrow}")
+        self.tree.heading("action", text=f"{COLUMN_HEADINGS['action']} {action_arrow}")
 
     def _populate_table(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -202,8 +249,10 @@ class BindsEditorApp:
         for row in self.rows:
             groups.setdefault(row.device_name, []).append(row)
 
-        for device_name in sorted(groups.keys(), key=device_sort_key):
-            device_rows = sorted(groups[device_name], key=lambda r: (r.label, r.slot))
+        for device_name in sorted(groups.keys(), key=device_sort_key,
+                                   reverse=self._device_sort_reverse):
+            device_rows = sorted(groups[device_name], key=lambda r: r.label,
+                                  reverse=self._action_sort_reverse)
             group_item = self.tree.insert(
                 "", "end", text="",
                 values=(device_name, f"{len(device_rows)} binding(s)", "", "", "", ""),
@@ -213,8 +262,9 @@ class BindsEditorApp:
                 item = self.tree.insert(
                     group_item, "end", text="",
                     values=(
-                        row.device_name, row.label, row.slot,
-                        row.key, row.modifiers, row.inverted,
+                        row.device_name, row.label, row.key, row.modifiers,
+                        format_key_and_modifiers(row.secondary_key, row.secondary_modifiers),
+                        row.inverted,
                     ),
                 )
                 self._row_by_item[item] = row
@@ -223,6 +273,8 @@ class BindsEditorApp:
         self.tree.set(item, "device", row.device_name)
         self.tree.set(item, "key", row.key)
         self.tree.set(item, "modifiers", row.modifiers)
+        self.tree.set(item, "secondary_key",
+                       format_key_and_modifiers(row.secondary_key, row.secondary_modifiers))
         self.tree.set(item, "inverted", row.inverted)
 
     def _update_title(self) -> None:
@@ -230,9 +282,66 @@ class BindsEditorApp:
         star = "*" if self.dirty else ""
         self.root.title(f"Elite Dangerous Binds Editor - {name}{star}")
 
+    # ------------------------------------------------------------- tooltip
+
+    def _on_tree_motion(self, event: tk.Event) -> None:
+        item = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        cell = (item, col_id)
+        if cell == self._tooltip_cell:
+            return
+        self._cancel_tooltip()
+        self._tooltip_cell = cell
+        if not item or not col_id or col_id == "#0":
+            return
+        x_root, y_root = event.x_root, event.y_root
+        self._tooltip_after_id = self.root.after(
+            500, lambda: self._show_tooltip(item, col_id, x_root, y_root)
+        )
+
+    def _show_tooltip(self, item: str, col_id: str, x_root: int, y_root: int) -> None:
+        self._tooltip_after_id = None
+        try:
+            col_index = int(col_id.replace("#", "")) - 1
+            col_name = COLUMNS[col_index]
+        except (ValueError, IndexError):
+            return
+        text = self.tree.set(item, col_name)
+        if not text:
+            return
+
+        self._destroy_tooltip()
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        label = tk.Label(
+            win, text=text, background="#ffffe0", relief="solid", borderwidth=1,
+            font=("TkDefaultFont", 9), padx=4, pady=2, justify="left", wraplength=420,
+        )
+        label.pack()
+        win.geometry(f"+{x_root + 12}+{y_root + 16}")
+        self._tooltip_win = win
+
+    def _cancel_tooltip(self) -> None:
+        if self._tooltip_after_id is not None:
+            self.root.after_cancel(self._tooltip_after_id)
+            self._tooltip_after_id = None
+        self._destroy_tooltip()
+
+    def _destroy_tooltip(self) -> None:
+        if self._tooltip_win is not None:
+            self._tooltip_win.destroy()
+            self._tooltip_win = None
+
+    def _hide_tooltip(self) -> None:
+        self._tooltip_cell = None
+        self._cancel_tooltip()
+
     # ---------------------------------------------------------------- edit
 
     def _on_double_click(self, event: tk.Event) -> None:
+        self._hide_tooltip()
+
         item = self.tree.identify_row(event.y)
         col_id = self.tree.identify_column(event.x)  # e.g. "#1"
         if not item or item not in self._row_by_item or not col_id:
@@ -332,6 +441,9 @@ class BindsEditorApp:
             old_raw, new_raw = row.key, new_display_value
         elif col_name == "modifiers":
             old_raw, new_raw = row.modifiers, new_display_value
+        elif col_name == "secondary_key":
+            old_raw = format_key_and_modifiers(row.secondary_key, row.secondary_modifiers)
+            new_raw = new_display_value
         else:  # inverted
             old_raw, new_raw = row.inverted, new_display_value
 
@@ -341,7 +453,7 @@ class BindsEditorApp:
         self.undo_stack.append(EditCommand(item, row, field_name, old_raw, new_raw))
         self.redo_stack.clear()
         self._mark_dirty_from_stack()
-        self.status_var.set(f"Edited {row.label} ({row.slot}) - not saved yet")
+        self.status_var.set(f"Edited {row.label} - not saved yet")
 
     def _apply_and_refresh(self, item: str, row: BindingRow, field_name: str, value: str) -> bool:
         try:
@@ -349,8 +461,11 @@ class BindsEditorApp:
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Invalid edit", str(exc))
             return False
-        if field_name == "device_id" and self.device_store is not None:
-            row.device_name = self.device_store.name_for(row.device_id)
+        if self.device_store is not None:
+            if field_name == "device_id":
+                row.device_name = self.device_store.name_for(row.device_id)
+            elif field_name == "secondary_key" and row.secondary_device_id:
+                row.secondary_device_name = self.device_store.name_for(row.secondary_device_id)
         self._refresh_row_display(item, row)
         return True
 
@@ -367,7 +482,7 @@ class BindsEditorApp:
         if self._apply_and_refresh(cmd.item, cmd.row, cmd.field_name, cmd.old_value):
             self.redo_stack.append(cmd)
             self._mark_dirty_from_stack()
-            self.status_var.set(f"Undid edit to {cmd.row.label} ({cmd.row.slot})")
+            self.status_var.set(f"Undid edit to {cmd.row.label}")
 
     def redo(self) -> None:
         if not self.redo_stack:
@@ -376,7 +491,7 @@ class BindsEditorApp:
         if self._apply_and_refresh(cmd.item, cmd.row, cmd.field_name, cmd.new_value):
             self.undo_stack.append(cmd)
             self._mark_dirty_from_stack()
-            self.status_var.set(f"Redid edit to {cmd.row.label} ({cmd.row.slot})")
+            self.status_var.set(f"Redid edit to {cmd.row.label}")
 
     # ---------------------------------------------------------------- save
 
@@ -533,7 +648,7 @@ def find_binds_files(search_root: Path) -> list[Path]:
 
 def run(initial_path: Path | None = None) -> None:
     root = tk.Tk()
-    root.geometry("1100x650")
+    root.geometry("1150x650")
     app = BindsEditorApp(root, initial_path=initial_path)
 
     if initial_path is None:
