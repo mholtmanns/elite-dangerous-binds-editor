@@ -3,6 +3,10 @@
 Editing is done by double-clicking a cell and typing a new value (or, for
 Device, picking from a dropdown of known devices) - there is no "press a
 button to bind" capture anywhere in this tool, by design.
+
+Device names are never hard-coded: they come from Windows' own joystick
+name cache (matched by the .binds file's VID/PID device ID) or from a
+user-typed override, stored next to the .binds file. See devices.py.
 """
 
 from __future__ import annotations
@@ -12,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .devices import device_id_for_friendly_name, device_sort_key, known_device_names
-from .parser import BindingRow, apply_edit, extract_rows, load_binds, save_binds
+from .devices import DeviceNameStore, device_sort_key, name_store_path_for
+from .parser import BindingRow, apply_edit, extract_rows, load_binds, resolve_device_names, save_binds
 from .pdf_export import export_pdf
 
 EDITABLE_COLUMNS = {"device", "key", "modifiers", "inverted"}
@@ -49,6 +53,7 @@ class BindsEditorApp:
         self.tree_xml = None
         self.rows: list[BindingRow] = []
         self.path: Path | None = None
+        self.device_store: DeviceNameStore | None = None
         self.dirty = False
 
         self.undo_stack: list[EditCommand] = []
@@ -80,6 +85,8 @@ class BindsEditorApp:
         edit_menu = tk.Menu(menubar, tearoff=0)
         edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
         edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Device Names...", command=self.open_device_names_dialog)
         menubar.add_cascade(label="Edit", menu=edit_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -129,7 +136,9 @@ class BindsEditorApp:
         messagebox.showinfo(
             "Editing help",
             "Double-click a Device, Key, Modifiers, or Inverted cell to edit it.\n\n"
-            "Device is a dropdown of known devices - no free text entry.\n\n"
+            "Device is a dropdown of known devices - no free text entry. Device\n"
+            "names are auto-detected from Windows where possible; use Edit >\n"
+            "Device Names... to name any device that couldn't be auto-detected.\n\n"
             "Key / Modifiers use Elite Dangerous's internal names, e.g.:\n"
             "  Key_A, Key_LeftAlt, Key_RightControl, Joy_1, Joy_XAxis\n\n"
             "Modifiers: comma-separated list, e.g. Key_LeftAlt,Key_RightControl\n\n"
@@ -158,7 +167,9 @@ class BindsEditorApp:
 
         self.tree_xml = tree_xml
         self.path = path
+        self.device_store = DeviceNameStore(name_store_path_for(path))
         self.rows = extract_rows(tree_xml)
+        resolve_device_names(self.rows, self.device_store.name_for)
         self.dirty = False
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -177,6 +188,9 @@ class BindsEditorApp:
             ):
                 return
         self.open_file(self.path)
+
+    def _distinct_device_ids(self) -> list[str]:
+        return sorted({row.device_id for row in self.rows})
 
     # --------------------------------------------------------------- table
 
@@ -269,11 +283,16 @@ class BindsEditorApp:
 
     def _begin_device_edit(self, item: str, row: BindingRow,
                             bbox: tuple[int, int, int, int]) -> None:
+        if self.device_store is None:
+            return
         x, y, width, height = bbox
         current_value = self.tree.set(item, "device")
 
         self._destroy_edit_widget()
-        combo = ttk.Combobox(self.tree, state="readonly", values=known_device_names())
+        combo = ttk.Combobox(
+            self.tree, state="readonly",
+            values=self.device_store.known_names_for(self._distinct_device_ids()),
+        )
         combo.set(current_value)
         combo.place(x=x, y=y, width=width, height=height)
         combo.focus_set()
@@ -306,7 +325,7 @@ class BindsEditorApp:
 
         if col_name == "device":
             old_raw = row.device_id
-            new_raw = device_id_for_friendly_name(new_display_value)
+            new_raw = self.device_store.id_for_name(self._distinct_device_ids(), new_display_value)
             if new_raw is None:
                 new_raw = new_display_value  # shouldn't happen - dropdown is restricted
         elif col_name == "key":
@@ -330,6 +349,8 @@ class BindsEditorApp:
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Invalid edit", str(exc))
             return False
+        if field_name == "device_id" and self.device_store is not None:
+            row.device_name = self.device_store.name_for(row.device_id)
         self._refresh_row_display(item, row)
         return True
 
@@ -399,6 +420,111 @@ class BindsEditorApp:
             messagebox.showerror("Export failed", str(exc))
             return
         self.status_var.set(f"Exported PDF to {chosen}")
+
+    # ---------------------------------------------------------- device names
+
+    def open_device_names_dialog(self) -> None:
+        if self.device_store is None:
+            messagebox.showwarning("No file loaded", "Open a .binds file first.")
+            return
+        DeviceNamesDialog(self.root, self)
+
+
+class DeviceNamesDialog(tk.Toplevel):
+    """Lets the user type a name for any device ID, real or unresolved."""
+
+    def __init__(self, parent: tk.Tk, app: BindsEditorApp):
+        super().__init__(parent)
+        self.app = app
+        self.title("Device Names")
+        self.geometry("520x360")
+        self.transient(parent)
+
+        intro = ttk.Label(
+            self,
+            text=(
+                "One row per device ID found in the loaded file. Names are "
+                "auto-detected from Windows where possible; type an override "
+                "for any device you'd like named differently (or unresolved IDs)."
+            ),
+            wraplength=490, justify="left", padding=10,
+        )
+        intro.pack(fill="x")
+
+        table_frame = ttk.Frame(self, padding=(10, 0))
+        table_frame.pack(fill="both", expand=True)
+
+        columns = ("device_id", "current", "override")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        self.tree.heading("device_id", text="Device ID")
+        self.tree.heading("current", text="Current name")
+        self.tree.heading("override", text="Override")
+        self.tree.column("device_id", width=110, anchor="w")
+        self.tree.column("current", width=190, anchor="w")
+        self.tree.column("override", width=180, anchor="w")
+        self.tree.pack(fill="both", expand=True, side="left")
+
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+
+        self.tree.bind("<Double-1>", self._on_double_click)
+        self._edit_entry: tk.Entry | None = None
+
+        store = app.device_store
+        for device_id in app._distinct_device_ids():
+            if store.is_generic(device_id):
+                continue
+            current = store.name_for(device_id)
+            override = current if store.has_override(device_id) else ""
+            self.tree.insert("", "end", iid=device_id, values=(device_id, current, override))
+
+        button_bar = ttk.Frame(self, padding=10)
+        button_bar.pack(fill="x")
+        ttk.Button(button_bar, text="Save", command=self._save).pack(side="right")
+        ttk.Button(button_bar, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 6))
+
+    def _on_double_click(self, event: tk.Event) -> None:
+        item = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        if not item or col_id != "#3":  # only "override" is editable
+            return
+        bbox = self.tree.bbox(item, col_id)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+
+        if self._edit_entry is not None:
+            self._edit_entry.destroy()
+
+        entry = tk.Entry(self.tree)
+        entry.insert(0, self.tree.set(item, "override"))
+        entry.select_range(0, "end")
+        entry.focus_set()
+        entry.place(x=x, y=y, width=width, height=height)
+
+        def commit(_event=None) -> None:
+            self.tree.set(item, "override", entry.get())
+            entry.destroy()
+            self._edit_entry = None
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<Escape>", lambda _e: (entry.destroy(), setattr(self, "_edit_entry", None)))
+        entry.bind("<FocusOut>", commit)
+        self._edit_entry = entry
+
+    def _save(self) -> None:
+        store = self.app.device_store
+        for device_id in self.tree.get_children():
+            override = self.tree.set(device_id, "override").strip()
+            store.set_override(device_id, override)
+        store.save()
+
+        resolve_device_names(self.app.rows, store.name_for)
+        self.app._populate_table()
+        self.app.status_var.set("Device names updated.")
+        self.destroy()
 
 
 def find_binds_files(search_root: Path) -> list[Path]:

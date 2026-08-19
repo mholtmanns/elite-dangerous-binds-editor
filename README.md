@@ -3,17 +3,26 @@
 A small local tool for viewing and editing an Elite Dangerous `.binds` keybind
 file as a human-readable table, grouped by input device.
 
-Built for a HOTAS/pedal setup identified via `AHK/Identify-Joysticks.ahk` in
-the parent project folder:
-
-| Device ID  | Device |
-|---|---|
-| `33448194` | VIRPIL MongoosT-50CM3 |
-| `231D0125` | VKB Gunfighter |
-| `16D00A38` | MFG Crosswind V2 |
-
 Only bindings that are actually assigned to a device/key are shown - unbound
 slots (`Device="{NoDevice}"`) are filtered out.
+
+## Device names
+
+`.binds` files identify most peripherals by their raw USB VID+PID as an
+8-character hex ID (e.g. `33448194`), not a name. Nothing in this app
+hard-codes a mapping for any specific controller - device names are resolved
+at runtime, in order:
+
+1. Elite Dangerous's own fixed categories (`Keyboard`, `Mouse`, unbound)
+2. Windows' own joystick name cache in the registry - the same names shown
+   in `joy.cpl` / the Game Controllers panel - matched by VID/PID. This
+   resolves any controller Windows has already seen on the current PC.
+3. A manual override you type in via **Edit > Device Names...**, for any
+   device that doesn't auto-resolve (e.g. a `.binds` file from another PC)
+
+Overrides are saved next to the `.binds` file as
+`<filename>.binds.device_names.json` - they travel with that binds profile,
+not with this app.
 
 ## Features
 
@@ -47,7 +56,7 @@ file and opens it automatically if exactly one is found. Otherwise use
 File > Open, or pass a path directly:
 
 ```bash
-.venv\Scripts\python main.py "..\AHK\HCS MongoosVKBMFG.4.2.binds"
+.venv\Scripts\python main.py "path\to\your\Preset.binds"
 ```
 
 ## Editing keys and modifiers
@@ -75,7 +84,7 @@ Nothing is written to disk until **File > Save**.
 main.py                    entry point
 src/bindseditor/
   parser.py                .binds XML <-> BindingRow, load/save
-  devices.py                known device ID -> friendly name map
+  devices.py                device ID -> friendly name resolution (registry + overrides)
   pdf_export.py             table -> PDF (fpdf2)
   gui.py                    Tkinter table UI
 tests/test_parser.py       parser + round-trip save tests

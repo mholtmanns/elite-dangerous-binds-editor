@@ -21,8 +21,6 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .devices import friendly_device_name
-
 _CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -39,7 +37,7 @@ class BindingRow:
     kind: str  # "Axis" or "Button"
     slot: str  # "Axis", "Primary", "Secondary"
     device_id: str
-    device_name: str
+    device_name: str  # resolved by the caller (see devices.DeviceNameStore)
     key: str
     modifiers: str  # comma-separated raw modifier key names, e.g. "Key_LeftAlt,Key_RightControl"
     inverted: str  # "Yes" / "No" for axis rows, "" otherwise
@@ -79,13 +77,19 @@ def _extract_slot_row(action: str, label: str, kind: str, slot_name: str,
         kind=kind,
         slot=slot_name,
         device_id=device_id,
-        device_name=friendly_device_name(device_id),
+        device_name=device_id,  # resolved to a friendly name by the caller
         key=key,
         modifiers=_modifiers_text(slot_element),
         inverted=inverted,
         _slot_element=slot_element,
         _inverted_element=inverted_element,
     )
+
+
+def resolve_device_names(rows: list[BindingRow], name_for) -> None:
+    """Fill in row.device_name for every row using a `device_id -> name` callable."""
+    for row in rows:
+        row.device_name = name_for(row.device_id)
 
 
 def extract_rows(tree: ET.ElementTree) -> list[BindingRow]:
@@ -134,7 +138,7 @@ def apply_edit(row: BindingRow, field_name: str, new_value: str) -> None:
     if field_name == "device_id":
         row._slot_element.set("Device", new_value)
         row.device_id = new_value
-        row.device_name = friendly_device_name(new_value)
+        row.device_name = new_value  # caller re-resolves the friendly name
 
     elif field_name == "key":
         row._slot_element.set("Key", new_value)
