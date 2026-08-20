@@ -56,6 +56,13 @@ def test_humanize():
     assert humanize("UpThrustButton") == "Up Thrust Button"
 
 
+def test_humanize_keeps_abbreviations_intact():
+    assert humanize("FSSDiscoveryScan") == "FSS Discovery Scan"
+    assert humanize("DSSJumpAssist") == "DSS Jump Assist"
+    assert humanize("ExplorationFSSEnter") == "Exploration FSS Enter"
+    assert humanize("UIFocus") == "UI Focus"
+
+
 def test_format_and_parse_key_and_modifiers_roundtrip():
     text = format_key_and_modifiers("Key_A", "Key_LeftAlt,Key_RightControl")
     assert text == "Key_A + Key_LeftAlt + Key_RightControl"

@@ -27,11 +27,16 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-_CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def humanize(tag: str) -> str:
-    """Turn an XML tag like 'YawAxisRaw' into 'Yaw Axis Raw'."""
+    """Turn an XML tag like 'YawAxisRaw' into 'Yaw Axis Raw'.
+
+    Splits at lower->upper boundaries, but keeps runs of capitals together
+    as a single word (e.g. 'FSSDiscoveryScan' -> 'FSS Discovery Scan',
+    not 'F S S Discovery Scan') so abbreviations like FSS/DSS stay intact.
+    """
     spaced = _CAMEL_SPLIT_RE.sub(" ", tag)
     return spaced.replace("_", " ").strip()
 
