@@ -80,6 +80,7 @@ class BindsEditorApp:
         self._build_table()
         self._build_statusbar()
         self._update_sort_indicators()
+        self._update_title()
 
         if initial_path is not None:
             self.open_file(initial_path)
