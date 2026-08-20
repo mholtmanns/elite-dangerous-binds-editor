@@ -92,6 +92,7 @@ class BindsEditorApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open .binds file...", command=self.prompt_open_file)
         file_menu.add_command(label="Bindings Folder...", command=self.prompt_change_bindings_folder)
+        file_menu.add_command(label="Startup File...", command=self.prompt_startup_file)
         file_menu.add_command(label="Reload from Disk", command=self.reload_from_disk)
         file_menu.add_command(label="Save", command=self.save, accelerator="Ctrl+S")
         file_menu.add_separator()
@@ -205,6 +206,14 @@ class BindsEditorApp:
             self.root.wait_window(dialog)
             if dialog.result is not None:
                 self.open_file(dialog.result)
+
+    def prompt_startup_file(self) -> None:
+        """Reopen the startup picker - the only way back once a default file
+        is set, since that skips the picker automatically going forward."""
+        dialog = BindsChooserDialog(self.root, self.config)
+        self.root.wait_window(dialog)
+        if dialog.result is not None:
+            self.open_file(dialog.result)
 
     def open_file(self, path: Path) -> None:
         try:
