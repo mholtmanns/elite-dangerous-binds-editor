@@ -707,6 +707,12 @@ class BindsChooserDialog(tk.Toplevel):
         self.listbox.pack(fill="both", expand=True, pady=(2, 0))
         self.listbox.bind("<Double-1>", lambda _e: self._choose())
 
+        self.remember_var = tk.BooleanVar(value=config.get_default_binds_file() is not None)
+        ttk.Checkbutton(
+            self, variable=self.remember_var,
+            text="Use selected file by default on next startup (skip this dialog)",
+        ).pack(fill="x", padx=10, pady=(0, 4))
+
         button_bar = ttk.Frame(self, padding=10)
         button_bar.pack(fill="x")
         ttk.Button(button_bar, text="Browse for a file...", command=self._browse_file).pack(side="left")
@@ -740,6 +746,7 @@ class BindsChooserDialog(tk.Toplevel):
         )
         if chosen:
             self.result = Path(chosen)
+            self._apply_remember_choice()
             self.destroy()
 
     def _choose(self) -> None:
@@ -747,7 +754,11 @@ class BindsChooserDialog(tk.Toplevel):
         if not selection or not self._files:
             return
         self.result = self._files[selection[0]]
+        self._apply_remember_choice()
         self.destroy()
+
+    def _apply_remember_choice(self) -> None:
+        self.config.set_default_binds_file(self.result if self.remember_var.get() else None)
 
     def _cancel(self) -> None:
         self.result = None
@@ -763,12 +774,16 @@ def run(initial_path: Path | None = None) -> None:
 
     chosen = initial_path
     if chosen is None:
-        # Withdrawing root first would make the picker (transient to it) a
-        # child of an unmapped window - on Windows that can leave it
-        # invisible and stuck with no way to close it. Keep root visible.
-        dialog = BindsChooserDialog(root, config)
-        root.wait_window(dialog)
-        chosen = dialog.result
+        default_file = config.get_default_binds_file()
+        if default_file is not None and default_file.exists():
+            chosen = default_file
+        else:
+            # Withdrawing root first would make the picker (transient to it)
+            # a child of an unmapped window - on Windows that can leave it
+            # invisible and stuck with no way to close it. Keep root visible.
+            dialog = BindsChooserDialog(root, config)
+            root.wait_window(dialog)
+            chosen = dialog.result
 
     if chosen is not None:
         app.open_file(chosen)

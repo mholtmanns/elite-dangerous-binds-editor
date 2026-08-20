@@ -1,5 +1,5 @@
-"""Persistent app configuration - currently just which folder to look for
-.binds files in.
+"""Persistent app configuration - the bindings folder, and optionally a
+specific .binds file to open automatically on startup.
 
 Config is stored under %APPDATA%\\BindsEditor\\config.json (this app's own
 settings) by default - a different thing from %LOCALAPPDATA%, where Elite
@@ -25,7 +25,7 @@ def default_config_path() -> Path:
 
 
 class AppConfig:
-    """Reads/writes the app's own settings file (currently: bindings_dir)."""
+    """Reads/writes the app's own settings file."""
 
     def __init__(self, path: Path | None = None):
         self.path = path if path is not None else default_config_path()
@@ -38,12 +38,27 @@ class AppConfig:
                 return {}
         return {}
 
+    def _set_raw(self, key: str, value: str | None) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        raw = self._load_raw()
+        if value is None:
+            raw.pop(key, None)
+        else:
+            raw[key] = value
+        self.path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
     def get_bindings_dir(self) -> Path:
         stored = self._load_raw().get("bindings_dir")
         return Path(stored) if stored else default_bindings_dir()
 
     def set_bindings_dir(self, path: Path) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        raw = self._load_raw()
-        raw["bindings_dir"] = str(path)
-        self.path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        self._set_raw("bindings_dir", str(path))
+
+    def get_default_binds_file(self) -> Path | None:
+        """The file to open automatically at startup, skipping the picker
+        dialog - only set once the user ticks "use by default" in it."""
+        stored = self._load_raw().get("default_binds_file")
+        return Path(stored) if stored else None
+
+    def set_default_binds_file(self, path: Path | None) -> None:
+        self._set_raw("default_binds_file", str(path) if path is not None else None)

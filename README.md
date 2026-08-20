@@ -77,6 +77,13 @@ at any time; the choice is remembered (in `%APPDATA%\BindsEditor\config.json`)
 for next time. The dialog also has a "Browse for a file..." button for
 anything outside that folder or not matching the naming pattern.
 
+Tick **"Use selected file by default on next startup"** before opening a
+file to skip this dialog entirely from then on - the app will just open
+that file straight away. To go back to being asked every time, delete (or
+edit) `%APPDATA%\BindsEditor\config.json`; `File > Open .binds file...`
+inside the app always works regardless, for opening a different file
+without touching that setting.
+
 To skip the dialog and open a specific file directly, pass a path:
 
 ```bash
