@@ -757,18 +757,19 @@ class BindsChooserDialog(tk.Toplevel):
 def run(initial_path: Path | None = None) -> None:
     root = tk.Tk()
     root.geometry("1150x650")
-    root.withdraw()
 
     config = AppConfig()
     app = BindsEditorApp(root, config=config)
 
     chosen = initial_path
     if chosen is None:
+        # Withdrawing root first would make the picker (transient to it) a
+        # child of an unmapped window - on Windows that can leave it
+        # invisible and stuck with no way to close it. Keep root visible.
         dialog = BindsChooserDialog(root, config)
         root.wait_window(dialog)
         chosen = dialog.result
 
-    root.deiconify()
     if chosen is not None:
         app.open_file(chosen)
     else:
