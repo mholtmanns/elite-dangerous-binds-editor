@@ -68,9 +68,16 @@ python -m venv .venv
 .venv\Scripts\python main.py
 ```
 
-With no argument, the app searches the parent project folder for a `.binds`
-file and opens it automatically if exactly one is found. Otherwise use
-File > Open, or pass a path directly:
+On startup (with no argument), a dialog lists every preset file matching
+`*.4.*.binds` (Elite Dangerous's own naming: `<Name>.<MajorVersion>.<MinorVersion>.binds`)
+in the bindings folder - pick one to open it. That folder defaults to Elite
+Dangerous's own location, `%LOCALAPPDATA%\Frontier Developments\Elite Dangerous\Options\Bindings`,
+and can be changed from the dialog itself or via **File > Bindings Folder...**
+at any time; the choice is remembered (in `%APPDATA%\BindsEditor\config.json`)
+for next time. The dialog also has a "Browse for a file..." button for
+anything outside that folder or not matching the naming pattern.
+
+To skip the dialog and open a specific file directly, pass a path:
 
 ```bash
 .venv\Scripts\python main.py "path\to\your\Preset.binds"
@@ -104,9 +111,10 @@ main.py                    entry point
 src/bindseditor/
   parser.py                .binds XML <-> BindingRow, load/save
   devices.py                device ID -> friendly name resolution (registry + overrides)
+  config.py                 app settings (bindings folder), persisted to %APPDATA%
   pdf_export.py             table -> PDF (fpdf2)
-  gui.py                    Tkinter table UI
-tests/test_parser.py       parser + round-trip save tests
+  gui.py                    Tkinter table UI + startup file-chooser dialog
+tests/                      parser, config, and device-resolution tests
 ```
 
 ## License

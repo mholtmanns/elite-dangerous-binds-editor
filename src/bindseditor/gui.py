@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .config import AppConfig
 from .devices import DeviceNameStore, device_sort_key, name_store_path_for
 from .parser import (
     BindingRow,
@@ -58,8 +59,10 @@ class EditCommand:
 
 
 class BindsEditorApp:
-    def __init__(self, root: tk.Tk, initial_path: Path | None = None):
+    def __init__(self, root: tk.Tk, initial_path: Path | None = None,
+                 config: AppConfig | None = None):
         self.root = root
+        self.config = config if config is not None else AppConfig()
         self.tree_xml = None
         self.rows: list[BindingRow] = []
         self.path: Path | None = None
@@ -88,6 +91,7 @@ class BindsEditorApp:
 
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open .binds file...", command=self.prompt_open_file)
+        file_menu.add_command(label="Bindings Folder...", command=self.prompt_change_bindings_folder)
         file_menu.add_command(label="Reload from Disk", command=self.reload_from_disk)
         file_menu.add_command(label="Save", command=self.save, accelerator="Ctrl+S")
         file_menu.add_separator()
@@ -181,10 +185,26 @@ class BindsEditorApp:
     def prompt_open_file(self) -> None:
         chosen = filedialog.askopenfilename(
             title="Open Elite Dangerous .binds file",
+            initialdir=str(self.config.get_bindings_dir()),
             filetypes=[(".binds files", "*.binds"), ("All files", "*.*")],
         )
         if chosen:
             self.open_file(Path(chosen))
+
+    def prompt_change_bindings_folder(self) -> None:
+        chosen = filedialog.askdirectory(
+            title="Choose Elite Dangerous bindings folder",
+            initialdir=str(self.config.get_bindings_dir()),
+        )
+        if not chosen:
+            return
+        self.config.set_bindings_dir(Path(chosen))
+        self.status_var.set(f"Bindings folder set to {chosen}")
+        if messagebox.askyesno("Open a file?", "Open a .binds file from the new folder now?"):
+            dialog = BindsChooserDialog(self.root, self.config)
+            self.root.wait_window(dialog)
+            if dialog.result is not None:
+                self.open_file(dialog.result)
 
     def open_file(self, path: Path) -> None:
         try:
@@ -642,23 +662,116 @@ class DeviceNamesDialog(tk.Toplevel):
         self.destroy()
 
 
-def find_binds_files(search_root: Path) -> list[Path]:
-    return sorted(search_root.glob("**/*.binds"))
+BINDS_GLOB_PATTERN = "*.4.*.binds"  # Elite Dangerous preset filenames: <Name>.<MajorVersion>.<MinorVersion>.binds
+
+
+def find_binds_presets(directory: Path) -> list[Path]:
+    if not directory.exists():
+        return []
+    return sorted(directory.glob(BINDS_GLOB_PATTERN))
+
+
+class BindsChooserDialog(tk.Toplevel):
+    """Startup dialog: pick which .binds preset to open from the bindings folder."""
+
+    def __init__(self, parent: tk.Tk, config: AppConfig):
+        super().__init__(parent)
+        self.config = config
+        self.result: Path | None = None
+        self._files: list[Path] = []
+
+        self.title("Open Elite Dangerous Bindings")
+        self.geometry("560x400")
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self.dir_var = tk.StringVar(value=str(self.config.get_bindings_dir()))
+
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="Bindings folder:").pack(anchor="w")
+        dir_row = ttk.Frame(top)
+        dir_row.pack(fill="x", pady=(2, 0))
+        ttk.Entry(dir_row, textvariable=self.dir_var, state="readonly").pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(dir_row, text="Change...", command=self._change_folder).pack(
+            side="left", padx=(6, 0)
+        )
+
+        list_frame = ttk.Frame(self, padding=(10, 6))
+        list_frame.pack(fill="both", expand=True)
+        ttk.Label(list_frame, text=f"Matching preset files ({BINDS_GLOB_PATTERN}):").pack(anchor="w")
+        self.listbox = tk.Listbox(list_frame)
+        self.listbox.pack(fill="both", expand=True, pady=(2, 0))
+        self.listbox.bind("<Double-1>", lambda _e: self._choose())
+
+        button_bar = ttk.Frame(self, padding=10)
+        button_bar.pack(fill="x")
+        ttk.Button(button_bar, text="Browse for a file...", command=self._browse_file).pack(side="left")
+        ttk.Button(button_bar, text="Open", command=self._choose).pack(side="right")
+        ttk.Button(button_bar, text="Cancel", command=self._cancel).pack(side="right", padx=(0, 6))
+
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        self.listbox.delete(0, "end")
+        self._files = find_binds_presets(Path(self.dir_var.get()))
+        for f in self._files:
+            self.listbox.insert("end", f.name)
+        if not self._files:
+            self.listbox.insert("end", "(no matching files found in this folder)")
+
+    def _change_folder(self) -> None:
+        chosen = filedialog.askdirectory(
+            title="Choose Elite Dangerous bindings folder", initialdir=self.dir_var.get()
+        )
+        if chosen:
+            self.dir_var.set(chosen)
+            self.config.set_bindings_dir(Path(chosen))
+            self._refresh_list()
+
+    def _browse_file(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="Open Elite Dangerous .binds file",
+            initialdir=self.dir_var.get(),
+            filetypes=[(".binds files", "*.binds"), ("All files", "*.*")],
+        )
+        if chosen:
+            self.result = Path(chosen)
+            self.destroy()
+
+    def _choose(self) -> None:
+        selection = self.listbox.curselection()
+        if not selection or not self._files:
+            return
+        self.result = self._files[selection[0]]
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.destroy()
 
 
 def run(initial_path: Path | None = None) -> None:
     root = tk.Tk()
     root.geometry("1150x650")
-    app = BindsEditorApp(root, initial_path=initial_path)
+    root.withdraw()
 
-    if initial_path is None:
-        project_root = Path(__file__).resolve().parents[3]
-        candidates = find_binds_files(project_root)
-        if len(candidates) == 1:
-            app.open_file(candidates[0])
-        elif len(candidates) > 1:
-            app.status_var.set(
-                f"Found {len(candidates)} .binds files - use File > Open to pick one."
-            )
+    config = AppConfig()
+    app = BindsEditorApp(root, config=config)
+
+    chosen = initial_path
+    if chosen is None:
+        dialog = BindsChooserDialog(root, config)
+        root.wait_window(dialog)
+        chosen = dialog.result
+
+    root.deiconify()
+    if chosen is not None:
+        app.open_file(chosen)
+    else:
+        app.status_var.set("No file opened - use File > Open to pick one.")
 
     root.mainloop()
